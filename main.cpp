@@ -40,6 +40,20 @@ vector<Team> teams;
 // last flushed ranking order: store indices
 vector<int> last_rank_order;
 
+struct BoardCmp {
+    bool operator()(int a, int b) const {
+        const Team &A = teams[a], &B = teams[b];
+        if (A.solved != B.solved) return A.solved > B.solved;
+        if (A.penalty != B.penalty) return A.penalty < B.penalty;
+        const auto &va = A.solve_times;
+        const auto &vb = B.solve_times;
+        for (size_t i=0;i<va.size(); ++i){
+            if (va[i] != vb[i]) return va[i] < vb[i];
+        }
+        return A.name < B.name;
+    }
+};
+
 static void insert_desc(vector<int>& v, int t){
     auto it = lower_bound(v.begin(), v.end(), t, greater<int>());
     v.insert(it, t);
@@ -265,59 +279,40 @@ int main(){
         } else if (cmd=="SCROLL"){
             if (!frozen){ cout << "[Error]Scroll failed: scoreboard has not been frozen.\n"; continue; }
             cout << "[Info]Scroll scoreboard.\n";
-            vector<int> current_order = compute_ranking_order();
-            last_rank_order = current_order;
-            print_scoreboard(current_order);
+            // pre-flush and print
+            vector<int> order_now = compute_ranking_order();
+            last_rank_order = order_now;
+            print_scoreboard(order_now);
             int n = (int)teams.size();
-            vector<int> pos(n);
-            for (int i=0;i<n;++i) pos[current_order[i]] = i;
-            auto has_frozen_team = [&](int ti){ return team_has_frozen(teams[ti]); };
-            struct CmpByPos { bool operator()(const pair<int,int>& a, const pair<int,int>& b) const { if (a.first!=b.first) return a.first<b.first; return a.second<b.second; } };
-            set<pair<int,int>, CmpByPos> cand;
-            vector<char> in_set(n, 0);
-            for (int ti=0; ti<n; ++ti){ if (has_frozen_team(ti)){ cand.insert({pos[ti], ti}); in_set[ti]=1; } }
-            auto better_than = [&](int a, int b){
-                const Team &A = teams[a], &B = teams[b];
-                if (A.solved != B.solved) return A.solved > B.solved;
-                if (A.penalty != B.penalty) return A.penalty < B.penalty;
-                const auto &va = A.solve_times;
-                const auto &vb = B.solve_times;
-                for (size_t i=0;i<va.size(); ++i){ if (va[i]!=vb[i]) return va[i] < vb[i]; }
-                return A.name < B.name;
-            };
+            set<int, BoardCmp> board;
+            for (int i=0;i<n;++i) board.insert(i);
+            set<int, BoardCmp> cand;
+            for (int i=0;i<n;++i) if (team_has_frozen(teams[i])) cand.insert(i);
             while (!cand.empty()){
-                auto it = prev(cand.end());
-                int chosen_team = it->second;
-                cand.erase(it); in_set[chosen_team]=0;
+                int chosen_team = *cand.rbegin();
+                cand.erase(chosen_team);
+                auto it_old = board.find(chosen_team);
+                int prev_old = -1;
+                if (it_old != board.begin()) prev_old = *prev(it_old);
+                board.erase(it_old);
                 int chosen_prob=-1; for(int p=0;p<M;++p){ auto &S=teams[chosen_team].ps[p]; if (!S.solved && S.y_after_freeze>0){ chosen_prob=p; break; } }
-                int old_pos = pos[chosen_team];
-                vector<int> prev_order = current_order;
                 apply_unfreeze_for(teams[chosen_team], chosen_prob);
-                int i = pos[chosen_team];
-                while (i>0 && better_than(chosen_team, current_order[i-1])){
-                    int other = current_order[i-1];
-                    swap(current_order[i], current_order[i-1]);
-                    int old_pos_other = pos[other];
-                    pos[other] = i; pos[chosen_team] = i-1;
-                    if (in_set[other]){
-                        cand.erase({old_pos_other, other});
-                        cand.insert({pos[other], other});
+                auto it_new = board.insert(chosen_team).first;
+                int prev_new = -1; if (it_new != board.begin()) prev_new = *prev(it_new);
+                if (prev_new != prev_old){
+                    auto it_succ = next(it_new);
+                    if (it_succ != board.end()){
+                        int replaced = *it_succ;
+                        cout << teams[chosen_team].name << ' ' << teams[replaced].name << ' ' << teams[chosen_team].solved << ' ' << teams[chosen_team].penalty << "\n";
                     }
-                    --i;
                 }
-                int new_pos = pos[chosen_team];
-                if (new_pos < old_pos){
-                    int replaced_team_idx = prev_order[new_pos];
-                    cout << teams[chosen_team].name << ' ' << teams[replaced_team_idx].name << ' ' << teams[chosen_team].solved << ' ' << teams[chosen_team].penalty << "\n";
-                }
-                if (has_frozen_team(chosen_team)){
-                    cand.insert({pos[chosen_team], chosen_team});
-                    in_set[chosen_team]=1;
-                }
+                if (team_has_frozen(teams[chosen_team])) cand.insert(chosen_team);
             }
             frozen = false;
-            last_rank_order = current_order;
-            print_scoreboard(current_order);
+            vector<int> final_order; final_order.reserve(n);
+            for (int ti : board) final_order.push_back(ti);
+            last_rank_order = final_order;
+            print_scoreboard(final_order);
         } else if (cmd=="QUERY_RANKING"){
             string team; cin >> team;
             if (id.find(team)==id.end()){ cout << "[Error]Query ranking failed: cannot find the team.\n"; continue; }
