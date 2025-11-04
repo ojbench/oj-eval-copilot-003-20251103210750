@@ -33,12 +33,11 @@ bool started = false;
 bool frozen = false;
 int duration_time = 0;
 
+// live board for non-frozen period (declared after BoardCmp)
+
 // Teams
 unordered_map<string,int> id;
 vector<Team> teams;
-
-// last flushed ranking order: store indices
-vector<int> last_rank_order;
 
 struct BoardCmp {
     bool operator()(int a, int b) const {
@@ -53,6 +52,12 @@ struct BoardCmp {
         return A.name < B.name;
     }
 };
+
+static set<int, BoardCmp> live_board;
+static bool live_ready = false;
+
+// last flushed ranking order: store indices
+vector<int> last_rank_order;
 
 static void insert_desc(vector<int>& v, int t){
     auto it = lower_bound(v.begin(), v.end(), t, greater<int>());
@@ -100,7 +105,13 @@ static void print_scoreboard(const vector<int>& order){
 }
 
 static void do_flush(){
-    last_rank_order = compute_ranking_order();
+    if (live_ready){
+        last_rank_order.clear();
+        last_rank_order.reserve(teams.size());
+        for (int ti : live_board) last_rank_order.push_back(ti);
+    } else {
+        last_rank_order = compute_ranking_order();
+    }
 }
 
 static void start_competition(int dur, int pcnt){
@@ -111,6 +122,10 @@ static void start_competition(int dur, int pcnt){
     vector<int> idx(teams.size()); iota(idx.begin(), idx.end(), 0);
     stable_sort(idx.begin(), idx.end(), [&](int a, int b){ return teams[a].name < teams[b].name; });
     last_rank_order = idx;
+    // Prepare live board
+    live_board.clear();
+    for (int i=0;i<(int)teams.size();++i) live_board.insert(i);
+    live_ready = true;
 }
 
 static void add_team(const string &name){
@@ -132,11 +147,14 @@ static void submit(const string &prob, const string &team, const string &status,
     if (S.solved) return; // further submissions do nothing
     if (!frozen){
         if (isAccepted(status)){
+            // update live board around change
+            if (live_ready){ live_board.erase(ti); }
             S.solved = true;
             S.solve_time = t;
             T.solved++;
             T.penalty += 20LL * S.wrong + t;
             insert_desc(T.solve_times, t);
+            if (live_ready){ live_board.insert(ti); }
         } else {
             S.wrong++;
         }
@@ -279,29 +297,27 @@ int main(){
         } else if (cmd=="SCROLL"){
             if (!frozen){ cout << "[Error]Scroll failed: scoreboard has not been frozen.\n"; continue; }
             cout << "[Info]Scroll scoreboard.\n";
-            // pre-flush and print
-            vector<int> order_now = compute_ranking_order();
+            // pre-flush and print using live board order
+            vector<int> order_now; order_now.reserve(live_board.size());
+            for (int ti : live_board) order_now.push_back(ti);
             last_rank_order = order_now;
             print_scoreboard(order_now);
-            int n = (int)teams.size();
-            set<int, BoardCmp> board;
-            for (int i=0;i<n;++i) board.insert(i);
+            // Candidate teams with frozen problems
             set<int, BoardCmp> cand;
-            for (int i=0;i<n;++i) if (team_has_frozen(teams[i])) cand.insert(i);
+            for (int ti : order_now) if (team_has_frozen(teams[ti])) cand.insert(ti);
             while (!cand.empty()){
                 int chosen_team = *cand.rbegin();
                 cand.erase(chosen_team);
-                auto it_old = board.find(chosen_team);
-                int prev_old = -1;
-                if (it_old != board.begin()) prev_old = *prev(it_old);
-                board.erase(it_old);
+                auto it_old = live_board.find(chosen_team);
+                int prev_old = -1; if (it_old != live_board.begin()) prev_old = *prev(it_old);
+                live_board.erase(it_old);
                 int chosen_prob=-1; for(int p=0;p<M;++p){ auto &S=teams[chosen_team].ps[p]; if (!S.solved && S.y_after_freeze>0){ chosen_prob=p; break; } }
                 apply_unfreeze_for(teams[chosen_team], chosen_prob);
-                auto it_new = board.insert(chosen_team).first;
-                int prev_new = -1; if (it_new != board.begin()) prev_new = *prev(it_new);
+                auto it_new = live_board.insert(chosen_team).first;
+                int prev_new = -1; if (it_new != live_board.begin()) prev_new = *prev(it_new);
                 if (prev_new != prev_old){
                     auto it_succ = next(it_new);
-                    if (it_succ != board.end()){
+                    if (it_succ != live_board.end()){
                         int replaced = *it_succ;
                         cout << teams[chosen_team].name << ' ' << teams[replaced].name << ' ' << teams[chosen_team].solved << ' ' << teams[chosen_team].penalty << "\n";
                     }
@@ -309,10 +325,10 @@ int main(){
                 if (team_has_frozen(teams[chosen_team])) cand.insert(chosen_team);
             }
             frozen = false;
-            vector<int> final_order; final_order.reserve(n);
-            for (int ti : board) final_order.push_back(ti);
-            last_rank_order = final_order;
-            print_scoreboard(final_order);
+            // update last_rank_order from live board and print
+            last_rank_order.clear(); last_rank_order.reserve(live_board.size());
+            for (int ti : live_board) last_rank_order.push_back(ti);
+            print_scoreboard(last_rank_order);
         } else if (cmd=="QUERY_RANKING"){
             string team; cin >> team;
             if (id.find(team)==id.end()){ cout << "[Error]Query ranking failed: cannot find the team.\n"; continue; }
