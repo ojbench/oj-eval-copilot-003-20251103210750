@@ -40,26 +40,21 @@ vector<Team> teams;
 // last flushed ranking order: store indices
 vector<int> last_rank_order;
 
-static vector<int> get_sorted_desc(const Team &t){
-    vector<int> v = t.solve_times;
-    sort(v.begin(), v.end(), greater<int>());
-    return v;
+static void insert_desc(vector<int>& v, int t){
+    auto it = lower_bound(v.begin(), v.end(), t, greater<int>());
+    v.insert(it, t);
 }
 
 static vector<int> compute_ranking_order(){
     int n = (int)teams.size();
     vector<int> idx(n); iota(idx.begin(), idx.end(), 0);
-    // Precompute sorted desc times per team to avoid resorting during compares
-    vector<vector<int>> desc_times(n);
-    for(int i=0;i<n;++i){ desc_times[i] = get_sorted_desc(teams[i]); }
     stable_sort(idx.begin(), idx.end(), [&](int a, int b){
         const Team &A = teams[a], &B = teams[b];
         if (A.solved != B.solved) return A.solved > B.solved;
         if (A.penalty != B.penalty) return A.penalty < B.penalty;
-        const auto &va = desc_times[a];
-        const auto &vb = desc_times[b];
-        // same size since solved equal
-        for(size_t i=0;i<va.size();++i){
+        const auto &va = A.solve_times; // maintained in descending order
+        const auto &vb = B.solve_times;
+        for (size_t i=0;i<va.size(); ++i){
             if (va[i] != vb[i]) return va[i] < vb[i]; // smaller max/next-max wins
         }
         return A.name < B.name;
@@ -68,13 +63,10 @@ static vector<int> compute_ranking_order(){
 }
 
 static void print_scoreboard(const vector<int>& order){
-    // ranking is 1-based position in this order
-    vector<int> rankpos(teams.size());
-    for(size_t i=0;i<order.size();++i) rankpos[order[i]] = (int)i+1;
     for(size_t i=0;i<order.size();++i){
         int ti = order[i];
         Team &T = teams[ti];
-        cout << T.name << ' ' << rankpos[ti] << ' ' << T.solved << ' ' << T.penalty;
+        cout << T.name << ' ' << (i+1) << ' ' << T.solved << ' ' << T.penalty;
         for(int p=0;p<M;++p){
             auto &S = T.ps[p];
             cout << ' ';
@@ -130,7 +122,7 @@ static void submit(const string &prob, const string &team, const string &status,
             S.solve_time = t;
             T.solved++;
             T.penalty += 20LL * S.wrong + t;
-            T.solve_times.push_back(t);
+            insert_desc(T.solve_times, t);
         } else {
             S.wrong++;
         }
@@ -184,7 +176,7 @@ static void apply_unfreeze_for(Team &T, int p){
             S.solve_time = ac_time;
             T.solved++;
             T.penalty += 20LL * S.wrong + ac_time; // S.wrong already includes before+after wrongs before AC
-            T.solve_times.push_back(ac_time);
+            insert_desc(T.solve_times, ac_time);
         } else {
             // all were wrong
             // nothing else
@@ -258,81 +250,83 @@ int main(){
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
-    string line;
-    while (std::getline(cin, line)){
-        if (line.empty()) continue;
-        string cmd;
-        {
-            stringstream ss(line);
-            ss >> cmd;
-        }
+    string cmd;
+    while (cin >> cmd){
         if (cmd=="ADDTEAM"){
-            string name; {
-                stringstream ss(line); ss>>cmd>>name; }
-            add_team(name);
+            string name; cin >> name; add_team(name);
         } else if (cmd=="START"){
-            // START DURATION [duration_time] PROBLEM [problem_count]
-            string tmp1,tmp2; int dur, pcnt;
-            stringstream ss(line);
-            ss>>cmd>>tmp1>>dur>>tmp2>>pcnt;
-            start_competition(dur, pcnt);
+            string DURATION, PROBLEM; int dur, pcnt; cin >> DURATION >> dur >> PROBLEM >> pcnt; start_competition(dur, pcnt);
         } else if (cmd=="SUBMIT"){
-            // SUBMIT [problem_name] BY [team_name] WITH [submit_status] AT [time]
-            string prob, by, team, with, status, at; int t;
-            stringstream ss(line);
-            ss>>cmd>>prob>>by>>team>>with>>status>>at>>t;
-            submit(prob, team, status, t);
+            string prob, BY, team, WITH, status, AT; int t; cin >> prob >> BY >> team >> WITH >> status >> AT >> t; submit(prob, team, status, t);
         } else if (cmd=="FLUSH"){
-            do_flush();
-            cout << "[Info]Flush scoreboard.\n";
+            do_flush(); cout << "[Info]Flush scoreboard.\n";
         } else if (cmd=="FREEZE"){
             do_freeze();
         } else if (cmd=="SCROLL"){
-            // We need enhanced logic to output rank-change lines
             if (!frozen){ cout << "[Error]Scroll failed: scoreboard has not been frozen.\n"; continue; }
             cout << "[Info]Scroll scoreboard.\n";
-            // pre-flush and print
-            vector<int> order = compute_ranking_order();
-            last_rank_order = order;
-            print_scoreboard(order);
-            vector<int> current_order = order;
-            while (true){
-                int chosen_team = -1;
-                for(int i=(int)current_order.size()-1;i>=0;--i){ int ti=current_order[i]; if (team_has_frozen(teams[ti])){ chosen_team=ti; break; } }
-                if (chosen_team==-1) break;
+            vector<int> current_order = compute_ranking_order();
+            last_rank_order = current_order;
+            print_scoreboard(current_order);
+            int n = (int)teams.size();
+            vector<int> pos(n);
+            for (int i=0;i<n;++i) pos[current_order[i]] = i;
+            auto has_frozen_team = [&](int ti){ return team_has_frozen(teams[ti]); };
+            struct CmpByPos { bool operator()(const pair<int,int>& a, const pair<int,int>& b) const { if (a.first!=b.first) return a.first<b.first; return a.second<b.second; } };
+            set<pair<int,int>, CmpByPos> cand;
+            vector<char> in_set(n, 0);
+            for (int ti=0; ti<n; ++ti){ if (has_frozen_team(ti)){ cand.insert({pos[ti], ti}); in_set[ti]=1; } }
+            auto better_than = [&](int a, int b){
+                const Team &A = teams[a], &B = teams[b];
+                if (A.solved != B.solved) return A.solved > B.solved;
+                if (A.penalty != B.penalty) return A.penalty < B.penalty;
+                const auto &va = A.solve_times;
+                const auto &vb = B.solve_times;
+                for (size_t i=0;i<va.size(); ++i){ if (va[i]!=vb[i]) return va[i] < vb[i]; }
+                return A.name < B.name;
+            };
+            while (!cand.empty()){
+                auto it = prev(cand.end());
+                int chosen_team = it->second;
+                cand.erase(it); in_set[chosen_team]=0;
                 int chosen_prob=-1; for(int p=0;p<M;++p){ auto &S=teams[chosen_team].ps[p]; if (!S.solved && S.y_after_freeze>0){ chosen_prob=p; break; } }
-                int old_pos = find(current_order.begin(), current_order.end(), chosen_team) - current_order.begin();
-                // keep prev order copy for replaced lookup
+                int old_pos = pos[chosen_team];
                 vector<int> prev_order = current_order;
                 apply_unfreeze_for(teams[chosen_team], chosen_prob);
-                current_order = compute_ranking_order();
-                int new_pos = find(current_order.begin(), current_order.end(), chosen_team) - current_order.begin();
+                int i = pos[chosen_team];
+                while (i>0 && better_than(chosen_team, current_order[i-1])){
+                    int other = current_order[i-1];
+                    swap(current_order[i], current_order[i-1]);
+                    int old_pos_other = pos[other];
+                    pos[other] = i; pos[chosen_team] = i-1;
+                    if (in_set[other]){
+                        cand.erase({old_pos_other, other});
+                        cand.insert({pos[other], other});
+                    }
+                    --i;
+                }
+                int new_pos = pos[chosen_team];
                 if (new_pos < old_pos){
                     int replaced_team_idx = prev_order[new_pos];
                     cout << teams[chosen_team].name << ' ' << teams[replaced_team_idx].name << ' ' << teams[chosen_team].solved << ' ' << teams[chosen_team].penalty << "\n";
                 }
+                if (has_frozen_team(chosen_team)){
+                    cand.insert({pos[chosen_team], chosen_team});
+                    in_set[chosen_team]=1;
+                }
             }
             frozen = false;
-            vector<int> final_order = compute_ranking_order();
-            last_rank_order = final_order;
-            print_scoreboard(final_order);
+            last_rank_order = current_order;
+            print_scoreboard(current_order);
         } else if (cmd=="QUERY_RANKING"){
-            string team; { stringstream ss(line); ss>>cmd>>team; }
+            string team; cin >> team;
             if (id.find(team)==id.end()){ cout << "[Error]Query ranking failed: cannot find the team.\n"; continue; }
             cout << "[Info]Complete query ranking.\n";
-            if (frozen){
-                cout << "[Warning]Scoreboard is frozen. The ranking may be inaccurate until it were scrolled.\n";
-            }
-            int ti = id[team];
-            // find rank in last_rank_order
-            int rk = 0; for(size_t i=0;i<last_rank_order.size();++i){ if (last_rank_order[i]==ti){ rk=(int)i+1; break; } }
+            if (frozen){ cout << "[Warning]Scoreboard is frozen. The ranking may be inaccurate until it were scrolled.\n"; }
+            int ti = id[team]; int rk = 0; for(size_t i=0;i<last_rank_order.size();++i){ if (last_rank_order[i]==ti){ rk=(int)i+1; break; } }
             cout << team << " NOW AT RANKING " << rk << "\n";
         } else if (cmd=="QUERY_SUBMISSION"){
-            // QUERY_SUBMISSION [team_name] WHERE PROBLEM=[problem_name] AND STATUS=[status]
-            // We'll parse by tokens and extract team, prob filter, status filter
-            string tmp, team, where, probEq, and_, statusEq;
-            stringstream ss(line);
-            ss>>cmd>>team>>where>>probEq>>and_>>statusEq;
+            string team, WHERE, probEq, AND, statusEq; cin >> team >> WHERE >> probEq >> AND >> statusEq;
             if (id.find(team)==id.end()){ cout << "[Error]Query submission failed: cannot find the team.\n"; continue; }
             cout << "[Info]Complete query submission.\n";
             string probv = probEq.substr(probEq.find('=')+1);
